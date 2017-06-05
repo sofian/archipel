@@ -333,20 +333,20 @@ void updateControl() {
 }
 
 void autoPlay() {
-    // Mutate.
-    dna.mutate(MUTATE_RATE);
+  // Mutate.
+  dna.mutate(MUTATE_RATE);
 
-    // Reset player params from new DNA and restart it.
-    resetPlayerFromDNA();
+  // Reset player params from new DNA and restart it.
+  resetPlayerFromDNA();
 
-    // Start sound now.
-    player.start();
+  // Start sound now.
+  player.start();
 }
 
-unsigned long timerDelay(int gene, unsigned long minDelay, unsigned long maxDelay, unsigned long noise) {
-    unsigned long t = map(dna.getGeneValue(gene), 0, dna.maxGeneValue(gene), minDelay, maxDelay);
-    t += random(-noise, noise);
-    return constrain(t, minDelay, maxDelay);
+unsigned long timerDelay(unsigned int gene, unsigned long minDelay, unsigned long maxDelay, unsigned long noise) {
+  unsigned long t = map(dna.getGeneValue(gene), 0, dna.maxGeneValue(gene), minDelay, maxDelay);
+  t += random(-noise, noise);
+  return constrain(t, minDelay, maxDelay);
 }
 
 /// Mozzi update audio.
