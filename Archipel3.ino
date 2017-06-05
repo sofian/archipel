@@ -355,7 +355,7 @@ int updateAudio() {
     return player.next();
   }
   else {
-    return (-128);
+    return (-128); // equivalent to 0V (to limit energy usage)
   }
 }
 
@@ -545,7 +545,7 @@ void resetPlayerFromDNA(bool restart) {
     float endPeriod   = mapReal(dna.getGeneValue(GENE_UNIT_1_REPEAT_END_PERIOD),
                                 0, dna.maxGeneValue(GENE_UNIT_1_REPEAT_END_PERIOD),
                                 PERIOD_MIN, PERIOD_MAX) * periodAccelerateFactor;
-    // End and start period have same sign.
+    // End and start period should have same sign.
     if (startPeriod < 0)
       endPeriod *= -1.0f;
 
