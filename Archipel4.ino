@@ -1,4 +1,6 @@
 //#include <ADC.h>  // Teensy 3.0/3.1 uncomment this line and install http://github.com/pedvide/ADC
+#define ENABLE_WDT 0
+
 #include <MozziGuts.h>
 #include <mozzi_fixmath.h>
 #include <Sample.h>
@@ -15,6 +17,12 @@
 
 #include <Sleep_n0m1.h>
 
+#if ENABLE_WDT
+#include <avr/wdt.h>
+#endif
+
+#define DEBUG 1
+
 /**
  * Settings.
  */
@@ -24,7 +32,10 @@
 #define IR_IN              19 // receiving on Serial1
 
 /// Indicator LED output.
-#define INDICATOR_LED_OUT  30
+#define INDICATOR_LED_OUT  13
+
+// Audio output.
+#define AUDIO_OUT 11
 
 /// Open analog pin for random init.
 #define RANDOM_AIN         0
@@ -35,20 +46,19 @@
 /// Mutation rate.
 #define MUTATE_RATE 0.01f
 
-/// Delay between detection of IR signal and sound playback.
-// cancelled!
-#define TRIGGER_DELAY_MIN      0
-#define TRIGGER_DELAY_MAX      0
-#define TRIGGER_DELAY_NOISE    0
-
 /// Delay after which the bird will play a sound even if there was no trigger.
 #define AUTO_PLAY_DELAY_MIN   30000UL
 #define AUTO_PLAY_DELAY_MAX   60000UL
 #define AUTO_PLAY_DELAY_NOISE 10000UL
 
 /// Delay after which auto-play stops if there were no triggers.
-//#define SILENT_MODE_DELAY   10000UL // test
-#define SILENT_MODE_DELAY   240000UL // 4 min
+#define SILENT_MODE_DELAY   5000UL // test
+//#define SILENT_MODE_DELAY   240000UL // 4 min
+
+#define SLEEP_POWER_DOWN_TIME 64
+#define SLEEP_MAX_TIME        10000UL
+
+#define WATCHDOG_RESET_TIMEOUT WDTO_8S
 
 /// List of genes.
 enum {
@@ -111,22 +121,15 @@ SoundPlayer player;
 /// IR remote receiver.
 IRrecv irrecv(IR_IN);
 
-/// Millisecond counter.
-unsigned long __controlCounter = 0;
-unsigned long controlMillis() {
-  return (__controlCounter * 1000UL) / CONTROL_RATE;
-}
-
-/// Timer for trigger delay.
-SuperTimer triggerTimer(false, controlMillis);
-unsigned long triggerDelay;
+// Sleep-control.
+Sleep sleep;
 
 /// Timer for auto-play delay.
-SuperTimer autoPlayTimer(false, controlMillis);
+SuperTimer autoPlayTimer(false);
 unsigned long autoPlayDelay;
 
 /// Timer for silent mode delay.
-SuperTimer silentModeTimer(false, controlMillis);
+SuperTimer silentModeTimer(false);
 
 /// Chromosome properties.
 BinaryChromosomeProperties info(N_GENES, GENE_SIZES);
@@ -159,17 +162,22 @@ void decodeResultsToDNA(uint8_t* code, const decode_results& result);
 /// Resets sound player based on current DNA.
 void resetPlayerFromDNA(bool restart=true);
 
+void autoPlay();
+
 /// Setup.
 void setup() {
   // Init indicator LED.
   pinMode(INDICATOR_LED_OUT, OUTPUT);
   digitalWrite(INDICATOR_LED_OUT, HIGH);
 
-  // Init random.
+  // Init random. (NOTE: this needs to be done before startMozzi())
   initRandomSeed(RANDOM_AIN);
 
   // Start serial.
   Serial.begin(9600);
+
+	// Set fast PWM mode.
+	TCCR1B = TCCR2B & 0b11111000 | 0x01;
 
 //  SERIAL_IR.begin(SERIAL_IR_BAUDRATE);
   irrecv.enableIRIn();
@@ -179,14 +187,10 @@ void setup() {
   messageDna.init();
 
   // Start Mozzi output.
-  startMozzi();
+  //startMozzi();
 
   // Set player from DNA and start it.
-  resetPlayerFromDNA();
-
-  // Init timers.
-  triggerTimer.start();
-  triggerDelay = 0;
+	autoPlay();
 
   autoPlayTimer.reset();
   autoPlayDelay = 0;
@@ -198,6 +202,22 @@ void setup() {
 
   // Switch LED off.
   digitalWrite(INDICATOR_LED_OUT, LOW);
+
+#if ENABLE_WDT
+  wdt_enable(WATCHDOG_RESET_TIMEOUT);
+#endif
+	Serial.println("Startup");
+}
+
+void autoPlay() {
+  // Mutate.
+  dna.mutate(MUTATE_RATE);
+
+  // Reset player params from new DNA and restart it.
+  resetPlayerFromDNA();
+
+  // Start sound now.
+  player.start();
 }
 
 /// Mozzi update control.
@@ -210,8 +230,11 @@ void updateControl() {
     // Switch LED on.
     digitalWrite(INDICATOR_LED_OUT, HIGH);
 
+		// REPEAT means that the key is maintained and repeated: avoid.
     if (results.value != REPEAT) {
+#if DEBUG
       Serial << "Value:" << results.value <<endl;
+#endif
 //      uint64_t h = hash(results);
 //      Serial << "Hash: " << (unsigned long)h << endl;
 
@@ -219,8 +242,6 @@ void updateControl() {
 
       // Generate a DNA string using serial information.
       decodeResultsToDNA(messageDna.code, results);
-//      Q_ARRAY_COPY(messageDna.code, (uint8_t*)&results.value, uint8_t, info.byteSize());
-//      Q_ARRAY_COPY(messageDna.code, (uint8_t*)&hash, uint8_t, info.byteSize());
 
       // Generate offsprings.
       BinaryChromosome::crossoverTwoPoint(dna, messageDna, &offspring1, &offspring2);
@@ -235,19 +256,9 @@ void updateControl() {
       }
       else
         dna.copyFrom( offspring2 );
-  //    dna.copyFrom(messageDna);
 
-      // Mutate
-      dna.mutate(MUTATE_RATE);
-
-      // Reset player params from new DNA and restart it.
-      resetPlayerFromDNA();
-
-      // Start trigger timer.
-      triggerDelay = map(dna.getGeneValue(GENE_TRIGGER_DELAY), 0, dna.maxGeneValue(GENE_TRIGGER_DELAY), TRIGGER_DELAY_MIN, TRIGGER_DELAY_MAX);
-      triggerDelay += random(-TRIGGER_DELAY_NOISE, TRIGGER_DELAY_NOISE);
-      triggerDelay = constrain(triggerDelay, TRIGGER_DELAY_MIN, TRIGGER_DELAY_MAX);
-      triggerTimer.start();
+			// Reinit and play.
+			autoPlay();
 
       // Restart auto-play timer.
       autoPlayDelay = map(dna.getGeneValue(GENE_AUTO_PLAY_DELAY), 0, dna.maxGeneValue(GENE_AUTO_PLAY_DELAY), AUTO_PLAY_DELAY_MIN, AUTO_PLAY_DELAY_MAX);
@@ -257,7 +268,6 @@ void updateControl() {
 
       // Restart silent mode timer.
       silentModeTimer.start();
-//      Serial << "Restart timer " << triggerTimer._startTime << " " << triggerTimer._offset << endl;
     }
 
     // Get ready to receive the next IR-remote signal.
@@ -271,40 +281,21 @@ void updateControl() {
   else if (silentModeTimer.currentTime() < SILENT_MODE_DELAY &&
            (autoPlayTimer.isStarted() && autoPlayTimer.currentTime() > autoPlayDelay))
   {
+#if DEBUG
     Serial << "AUTOPLAY" <<endl;
-    // Mutate.
-    dna.mutate(MUTATE_RATE);
+#endif
 
-    // Reset player params from new DNA and restart it.
-    resetPlayerFromDNA();
-
-    // Cancel trigger.
-    triggerTimer.reset();
+		// Start playing.
+		autoPlay();
 
     // Restart auto-play timer.
     autoPlayDelay = map(dna.getGeneValue(GENE_AUTO_PLAY_DELAY), 0, dna.maxGeneValue(GENE_AUTO_PLAY_DELAY), AUTO_PLAY_DELAY_MIN, AUTO_PLAY_DELAY_MAX);
     autoPlayDelay += random(-AUTO_PLAY_DELAY_NOISE, AUTO_PLAY_DELAY_NOISE);
     autoPlayDelay = constrain(autoPlayDelay, AUTO_PLAY_DELAY_MIN, AUTO_PLAY_DELAY_MAX);
     autoPlayTimer.start();
-
-    // Start sound now.
-    player.start();
   }
-
-  // Check if we need to start playing (trigger delay).
-  else if (triggerTimer.isStarted() && triggerTimer.currentTime() > triggerDelay)
-  {
-    // Start sound now.
-    player.start();
-
-    // Reset timer.
-    triggerTimer.reset();
-  }
-
-
-  // Update control counter.
-  __controlCounter++;
 }
+
 
 /// Mozzi update audio.
 int updateAudio() {
@@ -312,17 +303,81 @@ int updateAudio() {
     return player.next();
   }
   else {
-    return (-244);
+    return (0);
   }
 }
 
-Sleep sleep;
 
 /// Loop.
 void loop() {
-	if (silentModeTimer.currentTime() >= 5000) {
-		sleep.pwrDownMode();
-		sleep.sleepDelay(64);
+#if ENABLE_WDT
+	wdt_reset();
+#endif
+	// Check for updates.
+	updateControl();
+
+	// Run player (blocking)
+	for (unsigned long nSteps = 0; nSteps < 2000000UL && player.hasNext(); nSteps++) {
+		if (nSteps % 1000) {
+#if ENABLE_WDT
+			wdt_reset();
+#endif
+			updateControl();
+		}
+		int val = player.next() + 128;
+		val = constrain(val, 0, 255);
+		analogWrite(AUDIO_OUT, val);
+		delayMicroseconds(5);
+	}
+
+	player.reset(); // erase player
+	analogWrite(AUDIO_OUT, 0);
+
+	// if (!hadNext) {
+	// 	if (player.hasNext()) {
+	// 		Serial.println("Next =====");
+	// 		player.dump();
+	// 		hadNext = true;
+	// 	}
+	// }
+	// else {
+	// 	if (!player.hasNext()) {
+	// 		Serial.println("No next =====");
+	// 		player.dump();
+	// 		hadNext = false;
+	// 	}
+	// }
+
+	if (!player.hasNext() &&
+	    silentModeTimer.currentTime() >= SILENT_MODE_DELAY) {
+
+		Serial.println("Enter sleep");
+
+//		pauseMozzi();
+		delay(100); // give time to timers to stop
+
+		for (unsigned long t = 0; t<SLEEP_MAX_TIME; t+=SLEEP_POWER_DOWN_TIME) {
+			sleep.pwrDownMode();
+			sleep.sleepDelay(SLEEP_POWER_DOWN_TIME);
+
+#define SLEEP_LISTEN_N_RETRIES 50
+			for (int i=0; i<SLEEP_LISTEN_N_RETRIES; i++)
+			{
+				if (digitalRead(IR_IN) == LOW) // message incoming: just wake up
+				{
+					t = 10000UL;
+					break;
+				}
+			}
+		}
+
+		silentModeTimer.start();
+		autoPlay();
+#if ENABLE_WDT
+		wdt_enable(WATCHDOG_RESET_TIMEOUT);
+#endif
+//		unPauseMozzi();
+//		delay(100);
 	}
 	else
   	audioHook();
@@ -462,7 +517,7 @@ void resetPlayerFromDNA(bool restart) {
     for (int i=0; i<nRepeat; i++)
     {
       float period = mapReal(i+1, 0, nRepeat, startPeriod, endPeriod);
-      player.addUnit(unit.id, period, unit.mixNext);
+      player.addUnit(unit.id, period, (i == nRepeat -1 ? 1.0f : unit.mixNext))	;
     }
   }
 }
