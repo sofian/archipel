@@ -312,7 +312,7 @@ int updateAudio() {
     return player.next();
   }
   else {
-    return 0;
+    return (-244);
   }
 }
 
