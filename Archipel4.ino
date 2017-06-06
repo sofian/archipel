@@ -13,6 +13,7 @@
 
 #include "SoundPlayer.h"
 
+#include <Sleep_n0m1.h>
 
 /**
  * Settings.
@@ -315,9 +316,16 @@ int updateAudio() {
   }
 }
 
+Sleep sleep;
+
 /// Loop.
 void loop() {
-  audioHook();
+	if (silentModeTimer.currentTime() >= 5000) {
+		sleep.pwrDownMode();
+		sleep.sleepDelay(64);
+	}
+	else
+  	audioHook();
 }
 
 /// Bit distance between two chromosomes.
